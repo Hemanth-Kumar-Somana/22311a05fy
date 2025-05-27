@@ -1,130 +1,71 @@
 const express = require("express");
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
-const jwtDecode = require("jsonwebtoken").decode;
+const axios = require("axios");
 
 const app = express();
-const port = 9877;
+const PORT = 9001;
 
-// Initial token (replace or refresh as needed)
-let AUTH_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJNYXBDbGFpbXMiOnsiZXhwIjoxNzQ4MzI2OTg5LCJpYXQiOjE3NDgzMjY2ODksImlzcyI6IkFmZm9yZG1lZCIsImp0aSI6IjMwODJhMGE0LWU4MjUtNGJkZS1hZDQwLTdkNTNmMjdlZjc3YiIsInN1YiI6IjIyMzExYTA1ZnlAY3NlLnNyZWVuaWRoaS5lZHUuaW4ifSwiZW1haWwiOiIyMjMxMWEwNWZ5QGNzZS5zcmVlbmlkaGkuZWR1LmluIiwibmFtZSI6InNvbWFuYSBoZW1hbnRoIGt1bWFyIiwicm9sbE5vIjoiMjIzMTFhMDVmeSIsImFjY2Vzc0NvZGUiOiJQQ3FBVUsiLCJjbGllbnRJRCI6IjMwODJhMGE0LWU4MjUtNGJkZS1hZDQwLTdkNTNmMjdlZjc3YiIsImNsaWVudFNlY3JldCI6ImhSRm1EQ0F5WHd1eWFIeEMifQ.ZazTyvPrboNNP0LpmiPmDJx6L9PU3buFAfELwJlJBw0";
+// Test server base URL (running on port 5000)
+const TEST_SERVER_URL = "http://localhost:5000/evaluation-service";
 
-const movingAverages = {
-  prime: [],
-  even: [],
-  fibo: [],
-  rand: [],
+// API endpoints for different number categories
+const API_URLS = {
+    prime: `${TEST_SERVER_URL}/primes`,
+    fibonacci: `${TEST_SERVER_URL}/fibo`,
+    even: `${TEST_SERVER_URL}/even`,
+    random: `${TEST_SERVER_URL}/rand`,
 };
 
+let windowPrevState = [];
 const WINDOW_SIZE = 10;
 
-// Check if token is expired
-function isTokenExpired(token) {
-  try {
-    const decoded = jwtDecode(token);
-    if (!decoded || !decoded.exp) return true;
-    const now = Math.floor(Date.now() / 1000);
-    return decoded.exp < now;
-  } catch {
-    return true;
-  }
-}
-
-// Dummy token refresh logic - update with real logic as needed
-async function refreshToken() {
-  console.log("Refreshing token...");
-  // For now, just return same token
-  return AUTH_TOKEN;
-}
-
-// Generate random number ID between 1 and 100 (or range your API accepts)
-function getRandomId() {
-  return Math.floor(Math.random() * 100) + 1;
-}
-
-async function fetchNumber(apiUrl) {
-  if (isTokenExpired(AUTH_TOKEN)) {
-    AUTH_TOKEN = await refreshToken();
-  }
-
-  // Append a random valid id query parameter to avoid "invalid id" error
-  const id = getRandomId();
-  const urlWithId = `${apiUrl}?id=${id}`;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2000);
-
-  try {
-    const response = await fetch(urlWithId, {
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${AUTH_TOKEN}`,
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`API error: ${response.status} - ${errorText}`);
-      return [];
+// Function to fetch numbers from the mock test server
+async function fetchNumbers(type) {
+    try {
+        const response = await axios.get(API_URLS[type]);
+        return response.data.numbers;
+    } catch (error) {
+        console.error(`Error fetching ${type} numbers:`, error.message);
+        return [];
     }
-
-    const data = await response.json();
-    return data.numbers || [];
-  } catch (error) {
-    console.error("Error fetching numbers:", error.message);
-    return [];
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
+// Function to calculate moving average
 function calculateAverage(numbers) {
-  if (numbers.length === 0) return 0;
-  const sum = numbers.reduce((acc, num) => acc + num, 0);
-  return sum / numbers.length;
+    return numbers.length ? (numbers.reduce((a, b) => a + b, 0) / numbers.length).toFixed(2) : 0;
 }
 
+// Default route
 app.get("/", (req, res) => {
-  res.send("Welcome! Use /numbers/prime, /numbers/even, /numbers/fibo or /numbers/rand");
+    res.send("Welcome to the Average Calculator Microservice! Use /numbers/:type to fetch and calculate averages.");
 });
 
+// API endpoint for calculating average
 app.get("/numbers/:type", async (req, res) => {
-  const type = req.params.type;
-  const apiMap = {
-    prime: "http://20.244.56.144/evaluation-service/prime",
-    even: "http://20.244.56.144/evaluation-service/even",
-    fibo: "http://20.244.56.144/evaluation-service/fibo",
-    rand: "http://20.244.56.144/evaluation-service/rand",
-  };
+    const { type } = req.params;
 
-  const apiUrl = apiMap[type];
-  if (!apiUrl) {
-    return res.status(400).json({ error: "Invalid number type" });
-  }
-
-  const newNumbers = await fetchNumber(apiUrl);
-  const window = movingAverages[type];
-
-  for (const num of newNumbers) {
-    if (!window.includes(num)) {
-      if (window.length >= WINDOW_SIZE) {
-        window.shift();
-      }
-      window.push(num);
+    if (!API_URLS[type]) {
+        return res.status(400).json({ error: "Invalid number type" });
     }
-  }
 
-  const avg = calculateAverage(window);
-  res.json({
-    window: [...window],
-    average: avg.toFixed(2),
-  });
+    const fetchedNumbers = await fetchNumbers(type);
+    
+    // Remove duplicates
+    const newNumbers = fetchedNumbers.filter((num) => !windowPrevState.includes(num));
+    
+    // Maintain window size
+    windowPrevState = [...windowPrevState, ...newNumbers].slice(-WINDOW_SIZE);
+
+    // Calculate average
+    const avg = calculateAverage(windowPrevState);
+
+    res.json({
+        windowPrevState,
+        windowCurrState: newNumbers,
+        numbers: fetchedNumbers,
+        avg,
+    });
 });
 
-// Catch-all 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: "Page not found" });
-});
-
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+app.listen(PORT, () => {
+    console.log(`Microservice running on http://localhost:${PORT}`);
 });
